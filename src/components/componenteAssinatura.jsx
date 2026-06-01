@@ -1,14 +1,16 @@
 import React, { useState, useRef } from 'react';
 
-function ComponenteAssinatura() {
+export default function ComponenteAssinatura() {
   const [status, setStatus] = useState("Aguardando clique no botão...");
   const [statusColor, setStatusColor] = useState("#333");
   const [dispositivo, setDispositivo] = useState(null);
   
   const canvasRef = useRef(null);
   const desenhandoRef = useRef(false);
+  
+  // 1. NOVO: Referência para guardar o ponto anterior e permitir o traço suave
+  const ultimoPontoRef = useRef(null);
 
-  // Função para mapear a resolução gigante da Wacom para os pixels do Canvas
   const mapearCoordenada = (valor, limiteMesa, limiteCanvas) => {
     return (valor / limiteMesa) * limiteCanvas;
   };
@@ -42,44 +44,67 @@ function ComponenteAssinatura() {
 
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#000000';
 
-      // Resolução interna padrão da STU-520A (Eixos máximos do hardware)
+      // Resolução interna padrão da STU-520A
       const MAX_W_MESA = 10400;
       const MAX_H_MESA = 7800;
 
-      // Ouvinte dos dados brutos da USB da Wacom
+      // =================================================================
+      // SUBSTUIÇÃO AQUI: Todo este bloco mesa.oninputreport foi reescrito
+      // =================================================================
       mesa.oninputreport = (evento) => {
         const { data } = evento;
         const view = new DataView(data.buffer);
         
-        // Decodificação dos bytes da caneta conforme protocolo padrão HID Wacom STU
-        // Nota: A posição exata dos bytes varia por modelo, este é o mapeamento padrão de coordenadas:
-        const rdy = view.getUint8(0);
         const xBruto = view.getUint16(1, true); 
         const yBruto = view.getUint16(3, true);
         const pressao = view.getUint16(5, true);
 
-        // Se a caneta estiver tocando a mesa (pressão maior que zero)
-        if (pressao > 100) {
-          const x = mapearCoordenada(xBruto, MAX_W_MESA, canvas.width);
-          const y = mapearCoordenada(yBruto, MAX_H_MESA, canvas.height);
+        // Configurações estéticas do traço (Ajustado para formato caneta/nanquim)
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.shadowBlur = 1;
+        ctx.shadowColor = '#000000';
+        ctx.strokeStyle = '#000000';
 
-          if (!desenhandoRef.current) {
+        // Engrossa o traço dinamicamente de acordo com a força na caneta
+        ctx.lineWidth = pressao > 1000 ? 3.5 : 1.8;
+
+        // Filtro de pressão: Só desenha se a caneta realmente encostar (evita "fantasmas")
+        if (pressao > 150) { 
+          const xAtual = mapearCoordenada(xBruto, MAX_W_MESA, canvas.width);
+          const yAtual = mapearCoordenada(yBruto, MAX_H_MESA, canvas.height);
+
+          if (!desenhandoRef.current || !ultimoPontoRef.current) {
+            // Início do traço: guarda onde começou
             ctx.beginPath();
-            ctx.moveTo(x, y);
+            ctx.moveTo(xAtual, yAtual);
             desenhandoRef.current = true;
+            ultimoPontoRef.current = { x: xAtual, y: yAtual };
           } else {
-            ctx.lineTo(x, y);
+            // MÁGICA DA SUAVIZAÇÃO: Cria curvas entre os pontos em vez de retas picotadas
+            const antigo = ultimoPontoRef.current;
+            const midX = (antigo.x + xAtual) / 2;
+            const midY = (antigo.y + yAtual) / 2;
+
+            ctx.quadraticCurveTo(antigo.x, antigo.y, midX, midY);
             ctx.stroke();
+            
+            ultimoPontoRef.current = { x: xAtual, y: yAtual };
           }
           setStatus("Assinando...");
         } else {
-          // Caneta levantou da mesa
+          // Caneta levantou da mesa: encerra o traço atual
+          if (desenhandoRef.current) {
+            ctx.closePath();
+          }
           desenhandoRef.current = false;
+          ultimoPontoRef.current = null;
         }
       };
+      // =================================================================
+      // FIM DA SUBSTITUIÇÃO
+      // =================================================================
 
     } catch (erro) {
       console.error(erro);
@@ -93,20 +118,19 @@ function ComponenteAssinatura() {
     const dataUrl = canvas.toDataURL('image/png');
     console.log("PNG da assinatura pronto:", dataUrl);
     alert("Assinatura salva com sucesso em formato Base64/PNG!");
-    // Aqui entra o seu código antigo que envia para o backend
   };
 
   const limparCanvas = () => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ultimoPontoRef.current = null;
+    desenhandoRef.current = false;
     setStatus("Painel limpo. Pronto para nova assinatura.");
   };
 
   return (
     <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
-      <h2>Painel de Assinatura Digital (React + WebHID)</h2>
-      
       <div style={{ marginBottom: '15px' }}>
         <button onClick={iniciarCaptura} style={{ marginRight: '10px', padding: '10px', backgroundColor: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
           Ativar Mesa Wacom
@@ -119,11 +143,10 @@ function ComponenteAssinatura() {
         </button>
       </div>
 
-      {/* O quadrado onde a assinatura vai aparecer desenhada no navegador */}
       <canvas 
         ref={canvasRef} 
-        width={400} 
-        height={300} 
+        width={800} // Ajustado para a proporção que você usava no CSS
+        height={480} 
         style={{ border: '2px dashed #000', backgroundColor: '#f9f9f9', display: 'block', marginBottom: '15px' }}
       />
 
